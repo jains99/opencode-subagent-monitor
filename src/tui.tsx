@@ -241,7 +241,7 @@ function Card(props: {
           : `ctx ${formatContext(context)}`,
       )
     }
-    parts.push(`${formatTokens(tokenTotal(props.session))} tok`)
+    parts.push(formatTokens(tokenTotal(props.session)))
     parts.push(formatCost(props.session.cost))
     const left = parts.join(" · ")
     const badgeText = badge().text
