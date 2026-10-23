@@ -11,6 +11,16 @@ side panel (or a fullscreen grid). Each card displays:
 - cumulative token usage and cost
 - run state (running / done / failed / interrupted)
 
+## Screenshots
+
+Side panel:
+
+![Side panel](docs/screenshots/panel.png)
+
+Fullscreen grid (`f`):
+
+![Fullscreen grid](docs/screenshots/fullscreen.png)
+
 ## Install
 
 OpenCode V2 can install the plugin straight from this repository:
