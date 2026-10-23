@@ -5,9 +5,12 @@
  * the current session. Each card shows the agent, run state, current tool,
  * latest assistant text, tokens/cost, and pending permission prompts.
  *
+ * Succeeded subagents auto-hide shortly after they finish; failed and
+ * interrupted ones stay visible until cleared.
+ *
  * Keys: up/down/left/right (or h/j/k/l) select, Enter opens the subagent in
- * the current tab, x interrupts it (with confirmation), c clears finished
- * cards, f toggles fullscreen, Esc closes.
+ * the current tab, x interrupts it (with confirmation), c clears visible
+ * finished cards permanently, f toggles fullscreen, Esc closes.
  */
 
 import { Plugin, usePlugin } from "@opencode/plugin/tui"
@@ -23,9 +26,11 @@ import {
   onMount,
 } from "solid-js"
 
-const PANEL_NAME = "sachin.subagents"
+const PANEL_NAME = "subagent-monitor"
 const CARD_HEIGHT = 6
 const CARD_GAP = 1
+/** How long a succeeded card stays visible after the session goes idle. */
+const DONE_VISIBLE_MS = 30_000
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -55,12 +60,33 @@ function formatCost(n: number): string {
   return `$${n.toFixed(n > 0 && n < 0.01 ? 3 : 2)}`
 }
 
+// East Asian wide characters render at two terminal cells.
+const WIDE =
+  /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/
+
+function displayWidth(value: string): number {
+  let width = 0
+  for (const char of Array.from(value)) width += WIDE.test(char) ? 2 : 1
+  return width
+}
+
 function truncate(value: string, width: number): string {
   const clean = value.replace(/\s+/g, " ").trim()
   if (width <= 0) return ""
-  if (clean.length <= width) return clean
-  if (width === 1) return "…"
-  return `${clean.slice(0, width - 1)}…`
+  if (displayWidth(clean) <= width) return clean
+  if (width <= 2) return "…"
+  const chars = Array.from(clean)
+  let used = 0
+  let end = chars.length
+  for (let i = 0; i < chars.length; i++) {
+    const cell = WIDE.test(chars[i]) ? 2 : 1
+    if (used + cell > width - 1) {
+      end = i
+      break
+    }
+    used += cell
+  }
+  return `${chars.slice(0, end).join("")}…`
 }
 
 function statusOf(
@@ -199,16 +225,24 @@ function Card(props: {
   width: number
   selected: boolean
   index: number
+  /** Re-render tick from the parent; drives the spinner and elapsed time. */
+  tick: number
   onSelect: (index: number) => void
 }) {
   const ctx = usePlugin()
-  const status = () => statusOf(ctx, props.session)
+  const status = () => {
+    void props.tick
+    return statusOf(ctx, props.session)
+  }
   const activity = () => latestActivity(ctx, props.session.id)
   const permissions = () =>
     ctx.data.session.permission.list(props.session.id)?.length ?? 0
 
   const inner = () => Math.max(10, props.width - 4)
-  const headerRight = () => sessionDuration(ctx, props.session)
+  const headerRight = () => {
+    void props.tick
+    return sessionDuration(ctx, props.session)
+  }
   const name = () => {
     const label = `${status().glyph} ${props.session.agent ?? "subagent"}`
     const right = headerRight().length
@@ -323,7 +357,7 @@ function Empty(props: { hidden?: number }) {
       </text>
       <text fg={ctx.theme.text.muted}>
         {hidden() > 0
-          ? `${hidden()} finished ${hidden() === 1 ? "card is" : "cards are"} cleared.`
+          ? `${hidden()} finished ${hidden() === 1 ? "card is" : "cards are"} hidden.`
           : "They appear here when the main agent launches one."}
       </text>
     </box>
@@ -333,13 +367,14 @@ function Empty(props: { hidden?: number }) {
 function SubagentPanel(props: { panel: PanelInput }) {
   const ctx = usePlugin()
   const [version, setVersion] = createSignal(0)
-  const [selected, setSelected] = createSignal(0)
+  const [selectedId, setSelectedId] = createSignal<string | undefined>()
   const [clearedState, setClearedState] = ctx.storage.store<{ ids: string[] }>(
     "cleared",
     { initial: { ids: [] } },
   )
   let scroll: ScrollBoxRenderable | undefined
   let throttle: ReturnType<typeof setTimeout> | undefined
+  let rowsCache: { key: string; cols: number; rows: SessionInfo[][] } | undefined
   const synced = new Set<string>()
 
   const allSessions = (): SessionInfo[] => {
@@ -359,25 +394,39 @@ function SubagentPanel(props: { panel: PanelInput }) {
     return children.sort((a, b) => a.time.created - b.time.created)
   }
 
-  const sessions = (): SessionInfo[] => {
-    const hidden = new Set(clearedState.ids)
-    return allSessions().filter(
-      (session) => !(hidden.has(session.id) && finished(session)),
-    )
-  }
-
   const finished = (session: SessionInfo): boolean =>
     session.outcome === "succeeded" ||
     session.outcome === "failed" ||
     session.outcome === "interrupted"
 
+  const sessions = (): SessionInfo[] => {
+    const hidden = new Set(clearedState.ids)
+    const now = Date.now()
+    return allSessions().filter((session) => {
+      if (hidden.has(session.id) && finished(session)) return false
+      // Succeeded cards auto-hide after DONE_VISIBLE_MS; failures stay.
+      if (session.outcome === "succeeded") {
+        const end = session.time.idle ?? session.time.updated
+        if (end && now - end > DONE_VISIBLE_MS) return false
+      }
+      return true
+    })
+  }
+
   const hiddenCount = () => allSessions().length - sessions().length
   const finishedCount = () => sessions().filter(finished).length
+
+  const selectedIndex = (): number => {
+    const list = sessions()
+    const id = selectedId()
+    const index = id ? list.findIndex((session) => session.id === id) : -1
+    return index >= 0 ? index : 0
+  }
 
   const selectedSession = (): SessionInfo | undefined => {
     const list = sessions()
     if (list.length === 0) return undefined
-    return list[Math.min(selected(), list.length - 1)]
+    return list[selectedIndex()]
   }
 
   const layoutWidth = (): number =>
@@ -397,13 +446,20 @@ function SubagentPanel(props: { panel: PanelInput }) {
     return Math.max(22, Math.floor((available - gaps) / columns()))
   }
 
+  // Cache row arrays so <For> items keep stable references across the 1s
+  // tick — otherwise every card would remount each second.
   const rows = (): SessionInfo[][] => {
     const list = sessions()
     const cols = columns()
+    const key = list.map((session) => session.id).join("\n")
+    if (rowsCache && rowsCache.key === key && rowsCache.cols === cols) {
+      return rowsCache.rows
+    }
     const result: SessionInfo[][] = []
     for (let i = 0; i < list.length; i += cols) {
       result.push(list.slice(i, i + cols))
     }
+    rowsCache = { key, cols, rows: result }
     return result
   }
 
@@ -411,11 +467,23 @@ function SubagentPanel(props: { panel: PanelInput }) {
     sessions().filter((session) => ctx.data.session.status(session.id) === "running")
       .length
 
+  const pruneCleared = () => {
+    const ids = clearedState.ids
+    if (ids.length === 0) return
+    const all = new Set(ctx.data.session.list().map((session) => session.id))
+    if (ids.some((id) => !all.has(id))) {
+      void setClearedState((draft) => {
+        draft.ids = draft.ids.filter((id) => all.has(id))
+      })
+    }
+  }
+
   const bump = () => setVersion((value) => value + 1)
   const schedule = () => {
     if (throttle) return
     throttle = setTimeout(() => {
       throttle = undefined
+      pruneCleared()
       bump()
     }, 100)
   }
@@ -438,19 +506,31 @@ function SubagentPanel(props: { panel: PanelInput }) {
     for (const session of sessions()) {
       if (synced.has(session.id)) continue
       synced.add(session.id)
-      void ctx.data.session.message.sync(session.id).catch(() => {})
-      void ctx.data.session.permission.sync(session.id).catch(() => {})
+      // Drop from `synced` on failure so the next tick retries.
+      void ctx.data.session
+        .message.sync(session.id)
+        .catch(() => synced.delete(session.id))
+      void ctx.data.session
+        .permission.sync(session.id)
+        .catch(() => synced.delete(session.id))
     }
   })
 
   createEffect(() => {
-    const count = sessions().length
-    setSelected((current) => Math.min(current, Math.max(0, count - 1)))
+    const list = sessions()
+    const id = selectedId()
+    if (list.length === 0) {
+      if (id !== undefined) setSelectedId(undefined)
+      return
+    }
+    if (!id || !list.some((session) => session.id === id)) {
+      setSelectedId(list[0]?.id)
+    }
   })
 
   createEffect(() => {
     const list = sessions()
-    const index = Math.min(selected(), Math.max(0, list.length - 1))
+    const index = selectedIndex()
     if (!scroll || list.length === 0) return
     const row = Math.floor(index / columns())
     const top = row * (CARD_HEIGHT + CARD_GAP)
@@ -462,9 +542,11 @@ function SubagentPanel(props: { panel: PanelInput }) {
   })
 
   const move = (delta: number) => {
-    const count = sessions().length
+    const list = sessions()
+    const count = list.length
     if (count === 0) return
-    setSelected((current) => (current + delta + count) % count)
+    const next = (selectedIndex() + delta + count) % count
+    setSelectedId(list[next]?.id)
   }
 
   const openSelected = () => {
@@ -487,9 +569,22 @@ function SubagentPanel(props: { panel: PanelInput }) {
       label: { confirm: "Interrupt", cancel: "Cancel" },
     })
     if (!confirmed) return
-    await ctx.client.session
-      .interrupt({ sessionID: session.id })
-      .catch(() => {})
+    // Re-check: it may have finished while the dialog was open.
+    if (ctx.data.session.status(session.id) !== "running") {
+      ctx.ui.toast.show({
+        message: `${label} already finished`,
+        variant: "warning",
+      })
+      return
+    }
+    try {
+      await ctx.client.session.interrupt({ sessionID: session.id })
+    } catch (error) {
+      ctx.ui.toast.show({
+        message: `Interrupt failed: ${error instanceof Error ? error.message : String(error)}`,
+        variant: "error",
+      })
+    }
   }
 
   const clearFinished = () => {
@@ -506,7 +601,7 @@ function SubagentPanel(props: { panel: PanelInput }) {
   }
 
   const footerHint = () => {
-    const clear = finishedCount() > 0 ? " · c clear done" : ""
+    const clear = finishedCount() > 0 ? " · c clear finished" : ""
     return `↑↓←→ select · ⏎ open · x interrupt${clear} · f ${
       props.panel.presentation === "fullscreen" ? "exit full" : "full"
     } · esc close`
@@ -516,24 +611,24 @@ function SubagentPanel(props: { panel: PanelInput }) {
     enabled: () => props.panel.focused,
     priority: 100,
     commands: [
-      { id: "sachin.subagents.up", bind: "up", run: () => move(-columns()) },
-      { id: "sachin.subagents.down", bind: "down", run: () => move(columns()) },
-      { id: "sachin.subagents.left", bind: "left", run: () => move(-1) },
-      { id: "sachin.subagents.right", bind: "right", run: () => move(1) },
-      { id: "sachin.subagents.k", bind: "k", run: () => move(-columns()) },
-      { id: "sachin.subagents.j", bind: "j", run: () => move(columns()) },
-      { id: "sachin.subagents.h", bind: "h", run: () => move(-1) },
-      { id: "sachin.subagents.l", bind: "l", run: () => move(1) },
-      { id: "sachin.subagents.open", bind: "enter", run: openSelected },
-      { id: "sachin.subagents.interrupt", bind: "x", run: interruptSelected },
-      { id: "sachin.subagents.clear", bind: "c", run: clearFinished },
+      { id: "subagent-monitor.up", bind: "up", run: () => move(-columns()) },
+      { id: "subagent-monitor.down", bind: "down", run: () => move(columns()) },
+      { id: "subagent-monitor.left", bind: "left", run: () => move(-1) },
+      { id: "subagent-monitor.right", bind: "right", run: () => move(1) },
+      { id: "subagent-monitor.k", bind: "k", run: () => move(-columns()) },
+      { id: "subagent-monitor.j", bind: "j", run: () => move(columns()) },
+      { id: "subagent-monitor.h", bind: "h", run: () => move(-1) },
+      { id: "subagent-monitor.l", bind: "l", run: () => move(1) },
+      { id: "subagent-monitor.open", bind: "enter", run: openSelected },
+      { id: "subagent-monitor.interrupt", bind: "x", run: interruptSelected },
+      { id: "subagent-monitor.clear", bind: "c", run: clearFinished },
       {
-        id: "sachin.subagents.fullscreen",
+        id: "subagent-monitor.fullscreen",
         bind: "f",
         run: () => props.panel.toggleFullscreen(),
       },
       {
-        id: "sachin.subagents.close",
+        id: "subagent-monitor.close",
         bind: "escape",
         run: () => props.panel.close(),
       },
@@ -589,12 +684,11 @@ function SubagentPanel(props: { panel: PanelInput }) {
                       <Card
                         session={session}
                         width={cardWidth()}
-                        selected={
-                          sessions()[selected()]?.id === session.id
-                        }
+                        selected={sessions()[selectedIndex()]?.id === session.id}
                         index={rowIndex() * columns() + index()}
+                        tick={version()}
                         onSelect={(next) => {
-                          setSelected(next)
+                          setSelectedId(sessions()[next]?.id)
                           props.panel.focus()
                         }}
                       />
@@ -632,7 +726,7 @@ export default Plugin.define({
       mode: "global",
       commands: [
         {
-          id: "sachin.subagents.toggle",
+          id: "subagent-monitor.toggle",
           title: "Subagent monitor",
           description: "Show live subagent activity in a side panel",
           group: "Plugins",

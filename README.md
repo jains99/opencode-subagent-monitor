@@ -44,14 +44,18 @@ After installing, start (or restart) the TUI.
 - `↑`/`↓`/`←`/`→` (or `h`/`j`/`k`/`l`) — select a card.
 - `⏎` — open the selected subagent in the current tab.
 - `x` — interrupt a running subagent (with confirmation).
-- `c` — clear all finished cards.
+- `c` — clear all visible finished cards permanently.
 - `f` — toggle fullscreen.
 - `esc` — close the panel.
 
-### Clearing finished cards
+### Finished cards
 
-`c` hides all finished cards permanently. The cleared session IDs are stored
-with OpenCode's durable plugin storage, so they stay hidden across panel
+Succeeded subagents are **auto-hidden 30 seconds after they finish**, so the
+panel stays focused on live work. Failed and interrupted cards are *not*
+auto-hidden — they stay until you clear them.
+
+`c` hides all visible finished cards permanently. The cleared session IDs are
+stored with OpenCode's durable plugin storage, so they stay hidden across panel
 reopens and TUI restarts. This is view-only: it does not delete child sessions
 or their messages.
 
