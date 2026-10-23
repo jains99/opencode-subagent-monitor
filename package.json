@@ -1,0 +1,48 @@
+{
+  "name": "opencode-subagent-monitor",
+  "version": "0.1.0",
+  "description": "Responsive live subagent monitor panel for the OpenCode V2 TUI",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jains99/opencode-subagent-monitor.git"
+  },
+  "homepage": "https://github.com/jains99/opencode-subagent-monitor#readme",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "subagent",
+    "monitor",
+    "tui",
+    "terminal"
+  ],
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./tui.tsx"
+  },
+  "files": [
+    "index.ts",
+    "tui.tsx",
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.0.27"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.6.6",
+    "@opentui/solid": ">=0.6.6",
+    "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.0.27",
+    "@opencode/theme": "2.0.27",
+    "@opentui/core": "0.6.6",
+    "@opentui/solid": "0.6.6",
+    "solid-js": "1.9.12",
+    "typescript": "5.9.3"
+  }
+}
