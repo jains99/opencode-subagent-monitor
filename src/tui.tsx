@@ -45,6 +45,12 @@ function formatTokens(n: number): string {
   return `${n} tok`
 }
 
+function formatContext(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
+  return `${n}`
+}
+
 function formatCost(n: number): string {
   return `$${n.toFixed(n > 0 && n < 0.01 ? 3 : 2)}`
 }
@@ -231,8 +237,8 @@ function Card(props: {
       const limit = contextLimit(ctx, props.session)
       parts.push(
         limit
-          ? `ctx ${formatTokens(context)}/${formatTokens(limit)}`
-          : `ctx ${formatTokens(context)}`,
+          ? `ctx ${formatContext(context)}/${formatContext(limit)}`
+          : `ctx ${formatContext(context)}`,
       )
     }
     parts.push(`${formatTokens(tokenTotal(props.session))} tok`)
